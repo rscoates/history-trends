@@ -1,0 +1,162 @@
+# ---- Stage 1: Build frontend static files ----
+FROM node:20-alpine AS frontend-build
+WORKDIR /build
+COPY frontend/package*.json ./
+RUN npm install
+COPY frontend/ ./
+ENV VITE_API_URL=/api
+RUN npm run build
+
+# ---- Stage 2: All-in-one runtime ----
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PG_MAJOR=16
+
+# Install postgres + nginx + supervisor
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gnupg2 lsb-release wget ca-certificates curl && \
+    install -d /usr/share/postgresql-common/pgdg && \
+    curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc && \
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+      > /etc/apt/sources.list.d/pgdg.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      postgresql-${PG_MAJOR} postgresql-client-${PG_MAJOR} \
+      nginx \
+      supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python backend
+WORKDIR /app/backend
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY backend/ .
+
+# Frontend static files
+COPY --from=frontend-build /build/dist /var/www/html
+
+# Nginx config — serve frontend + proxy /api to backend
+RUN cat > /etc/nginx/sites-available/default <<'EOF'
+server {
+    listen 80;
+    root /var/www/html;
+    index index.html;
+
+    client_max_body_size 200M;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        client_max_body_size 200M;
+    }
+}
+EOF
+
+# Supervisor config
+RUN cat > /etc/supervisor/conf.d/htu.conf <<'EOF'
+[supervisord]
+nodaemon=true
+user=root
+logfile=/var/log/supervisor/supervisord.log
+
+[program:postgres]
+command=/usr/lib/postgresql/16/bin/postgres -D /data/postgres -c listen_addresses=127.0.0.1
+user=postgres
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+
+[program:backend]
+command=/app/backend/start-backend.sh
+directory=/app/backend
+environment=DATABASE_URL="postgresql+asyncpg://htu:htu_secret@127.0.0.1:5432/htu",APP_PASSWORD="%(ENV_APP_PASSWORD)s",SECRET_KEY="%(ENV_SECRET_KEY)s"
+autostart=true
+autorestart=true
+startsecs=5
+startretries=30
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+
+[program:nginx]
+command=nginx -g "daemon off;"
+autostart=true
+autorestart=true
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+EOF
+
+# Entrypoint — init Postgres on first run, then start supervisord
+RUN cat > /docker-entrypoint.sh <<'SCRIPT'
+#!/bin/bash
+set -e
+
+PGDATA="/data/postgres"
+PGBIN="/usr/lib/postgresql/16/bin"
+
+# Default env vars if not provided
+export APP_PASSWORD="${APP_PASSWORD:-changeme}"
+export SECRET_KEY="${SECRET_KEY:-change-this-to-a-random-secret-key}"
+
+mkdir -p /var/log/supervisor /data/postgres /app/backend/uploads
+
+if [ ! -f "$PGDATA/PG_VERSION" ]; then
+    echo "==> Initializing PostgreSQL database..."
+    chown -R postgres:postgres "$PGDATA"
+
+    su - postgres -c "$PGBIN/initdb -D $PGDATA"
+    su - postgres -c "$PGBIN/pg_ctl -D $PGDATA start -w -o '-c listen_addresses=127.0.0.1'"
+    su - postgres -c "psql -c \"CREATE USER htu WITH PASSWORD 'htu_secret';\""
+    su - postgres -c "psql -c \"CREATE DATABASE htu OWNER htu;\""
+    su - postgres -c "$PGBIN/pg_ctl -D $PGDATA stop -w"
+
+    echo "==> PostgreSQL initialized."
+else
+    echo "==> PostgreSQL data directory exists, skipping init."
+fi
+
+chown -R postgres:postgres "$PGDATA"
+
+echo "==> Starting services (postgres, backend, nginx)..."
+exec /usr/bin/supervisord -c /etc/supervisor/supervisord.conf
+SCRIPT
+RUN chmod +x /docker-entrypoint.sh
+
+# Backend start script — waits for Postgres to be ready
+RUN cat > /app/backend/start-backend.sh <<'SCRIPT'
+#!/bin/bash
+echo "Waiting for PostgreSQL to be ready..."
+for i in $(seq 1 30); do
+    pg_isready -h 127.0.0.1 -U htu -q && break
+    echo "  Postgres not ready yet (attempt $i/30)..."
+    sleep 2
+done
+pg_isready -h 127.0.0.1 -U htu -q || { echo "ERROR: PostgreSQL did not start in time"; exit 1; }
+echo "PostgreSQL is ready. Starting backend..."
+exec uvicorn app.main:app --host 127.0.0.1 --port 8000
+SCRIPT
+RUN chmod +x /app/backend/start-backend.sh
+
+EXPOSE 80
+
+VOLUME ["/data/postgres", "/app/backend/uploads"]
+
+ENV APP_PASSWORD=changeme
+ENV SECRET_KEY=change-this-to-a-random-secret-key
+
+ENTRYPOINT ["/docker-entrypoint.sh"]

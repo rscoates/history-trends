@@ -29,8 +29,9 @@ import {
   Add as AddIcon,
   Computer as ComputerIcon,
   Edit as EditIcon,
+  CleaningServices as CleanIcon,
 } from '@mui/icons-material';
-import { uploadTsv, getImports, deleteImport, getMachines, createMachine, renameMachine } from '../services/api';
+import { uploadTsv, getImports, deleteImport, getMachines, createMachine, renameMachine, cleanImport } from '../services/api';
 
 export default function ImportPage() {
   const [file, setFile] = useState(null);
@@ -45,6 +46,10 @@ export default function ImportPage() {
   const [newMachineName, setNewMachineName] = useState('');
   const [editingMachine, setEditingMachine] = useState(null);
   const [editMachineName, setEditMachineName] = useState('');
+  const [cleaningImport, setCleaningImport] = useState(null);
+  const [cleanAgainstIds, setCleanAgainstIds] = useState([]);
+  const [cleanResult, setCleanResult] = useState(null);
+  const [cleaning, setCleaning] = useState(false);
   const fileRef = useRef();
 
   const loadData = async () => {
@@ -109,6 +114,21 @@ export default function ImportPage() {
       loadData();
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to rename machine');
+    }
+  };
+
+  const handleClean = async () => {
+    if (!cleaningImport || cleanAgainstIds.length === 0) return;
+    setCleaning(true);
+    setCleanResult(null);
+    try {
+      const res = await cleanImport(cleaningImport.id, cleanAgainstIds);
+      setCleanResult(res.data);
+      loadData();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Clean failed');
+    } finally {
+      setCleaning(false);
     }
   };
 
@@ -248,6 +268,19 @@ export default function ImportPage() {
                   <TableCell>{imp.row_count.toLocaleString()}</TableCell>
                   <TableCell>{new Date(imp.imported_at).toLocaleString()}</TableCell>
                   <TableCell align="right">
+                    <Tooltip title="De-duplicate against other imports">
+                      <IconButton
+                        size="small"
+                        color="info"
+                        onClick={() => {
+                          setCleaningImport(imp);
+                          setCleanAgainstIds([]);
+                          setCleanResult(null);
+                        }}
+                      >
+                        <CleanIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
                     <Tooltip title="Delete import and all its visits">
                       <IconButton
                         size="small"
@@ -313,6 +346,61 @@ export default function ImportPage() {
           <Button variant="contained" onClick={handleRenameMachine} disabled={!editMachineName.trim()}>
             Rename
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Clean / De-duplicate Dialog */}
+      <Dialog
+        open={!!cleaningImport}
+        onClose={() => { setCleaningImport(null); setCleanResult(null); }}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>De-duplicate Import</DialogTitle>
+        <DialogContent>
+          {cleaningImport && (
+            <>
+              <Typography variant="body2" sx={{ mb: 2 }}>
+                Remove visits from <strong>"{cleaningImport.filename}"</strong> ({cleaningImport.machine_name})
+                that already exist in the selected reference imports. The reference copies are kept.
+              </Typography>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                Keep visits from these imports (remove duplicates from the one above):
+              </Typography>
+              <Autocomplete
+                multiple
+                options={imports.filter((i) => i.id !== cleaningImport.id)}
+                getOptionLabel={(opt) => `${opt.filename} (${opt.machine_name}, ${opt.row_count.toLocaleString()} visits)`}
+                value={imports.filter((i) => cleanAgainstIds.includes(i.id))}
+                onChange={(_, val) => setCleanAgainstIds(val.map((v) => v.id))}
+                renderInput={(params) => (
+                  <TextField {...params} label="Reference imports" placeholder="Select imports to keep" />
+                )}
+                sx={{ mb: 2 }}
+              />
+              {cleanResult && (
+                <Alert severity="success" sx={{ mt: 1 }}>
+                  Removed {cleanResult.removed.toLocaleString()} duplicate visits.{' '}
+                  {cleanResult.remaining.toLocaleString()} visits remaining in this import.
+                </Alert>
+              )}
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => { setCleaningImport(null); setCleanResult(null); }}>
+            {cleanResult ? 'Done' : 'Cancel'}
+          </Button>
+          {!cleanResult && (
+            <Button
+              variant="contained"
+              color="warning"
+              onClick={handleClean}
+              disabled={cleanAgainstIds.length === 0 || cleaning}
+            >
+              {cleaning ? 'Cleaning...' : 'Remove Duplicates'}
+            </Button>
+          )}
         </DialogActions>
       </Dialog>
     </Box>

@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from ..database import get_db
 from ..models import Machine, Url, Visit, Import
 from ..schemas import ImportOut
+from ..schemas import CleanRequest, CleanResult
 from ..auth_dep import require_auth
 from ..tsv_parser import parse_line
 
@@ -173,3 +174,47 @@ async def delete_import(import_id: int, db: AsyncSession = Depends(get_db)):
     )
     await db.delete(imp)
     await db.commit()
+
+
+@router.post("/{import_id}/clean", response_model=CleanResult)
+async def clean_import(import_id: int, body: CleanRequest, db: AsyncSession = Depends(get_db)):
+    """Remove visits from this import that are duplicated in the specified
+    reference imports.  Matches on same url_id + visit_time.  Keeps the
+    copies in the reference imports and deletes the ones in *this* import."""
+
+    result = await db.execute(select(Import).where(Import.id == import_id))
+    imp = result.scalar_one_or_none()
+    if not imp:
+        raise HTTPException(status_code=404, detail="Import not found")
+
+    if not body.against_import_ids:
+        raise HTTPException(status_code=400, detail="Must specify at least one reference import")
+
+    # Delete visits from this import where a matching (url_id, visit_time)
+    # exists in any of the reference imports
+    delete_sql = text("""
+        DELETE FROM visits v1
+        WHERE v1.import_id = :import_id
+          AND EXISTS (
+            SELECT 1 FROM visits v2
+            WHERE v2.url_id = v1.url_id
+              AND v2.visit_time = v1.visit_time
+              AND v2.import_id = ANY(:against_ids)
+          )
+    """)
+    res = await db.execute(delete_sql, {
+        "import_id": import_id,
+        "against_ids": body.against_import_ids,
+    })
+    removed = res.rowcount
+
+    # Update the import's row_count
+    count_res = await db.execute(
+        text("SELECT COUNT(*) FROM visits WHERE import_id = :import_id"),
+        {"import_id": import_id},
+    )
+    remaining = count_res.scalar()
+    imp.row_count = remaining
+    await db.commit()
+
+    return CleanResult(import_id=import_id, removed=removed, remaining=remaining)

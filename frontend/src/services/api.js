@@ -48,6 +48,8 @@ export const uploadTsv = (file, machineName, onProgress) => {
 };
 export const getImports = () => api.get('/imports/');
 export const deleteImport = (id) => api.delete(`/imports/${id}`);
+export const cleanImport = (id, againstImportIds) =>
+  api.post(`/imports/${id}/clean`, { against_import_ids: againstImportIds });
 
 // --- History ---
 export const searchHistory = (params) => api.post('/history/search', params);

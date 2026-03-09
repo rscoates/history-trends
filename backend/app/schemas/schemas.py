@@ -40,6 +40,16 @@ class ImportOut(BaseModel):
         from_attributes = True
 
 
+class CleanRequest(BaseModel):
+    against_import_ids: List[int]
+
+
+class CleanResult(BaseModel):
+    import_id: int
+    removed: int
+    remaining: int
+
+
 # --- Search / History ---
 class SearchRequest(BaseModel):
     keywords: Optional[str] = None

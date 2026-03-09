@@ -4,6 +4,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
+import hashlib
 
 from ..database import Base
 
@@ -23,12 +24,17 @@ class Url(Base):
     __tablename__ = "urls"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    url = Column(Text, unique=True, nullable=False)
+    url = Column(Text, nullable=False)
+    url_hash = Column(String(32), nullable=False, unique=True, index=True)
     host = Column(String(512), nullable=False, index=True)
     root_domain = Column(String(255), nullable=False, index=True)
     title = Column(Text, nullable=True)
 
     visits = relationship("Visit", back_populates="url_obj", cascade="all, delete-orphan")
+
+    @staticmethod
+    def compute_hash(url: str) -> str:
+        return hashlib.md5(url.encode()).hexdigest()
 
 
 class Visit(Base):

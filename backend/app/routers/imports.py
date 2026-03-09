@@ -70,6 +70,7 @@ async def upload_tsv(
                 seen_urls.add(row["url"])
                 url_dicts.append({
                     "url": row["url"],
+                    "url_hash": Url.compute_hash(row["url"]),
                     "host": row["host"],
                     "root_domain": row["root_domain"],
                     "title": row["title"],
@@ -78,7 +79,7 @@ async def upload_tsv(
         if url_dicts:
             stmt = pg_insert(Url).values(url_dicts)
             stmt = stmt.on_conflict_do_update(
-                index_elements=["url"],
+                index_elements=["url_hash"],
                 set_={
                     "title": stmt.excluded.title,
                     "host": stmt.excluded.host,
@@ -87,13 +88,13 @@ async def upload_tsv(
             )
             await db.execute(stmt)
 
-        # Fetch url_ids for this batch
-        batch_urls = list(seen_urls)
+        # Fetch url_ids for this batch using url_hash lookups
+        batch_hashes = [Url.compute_hash(u) for u in seen_urls]
         url_id_map = {}
-        for chunk_start in range(0, len(batch_urls), 500):
-            chunk = batch_urls[chunk_start:chunk_start + 500]
+        for chunk_start in range(0, len(batch_hashes), 500):
+            chunk = batch_hashes[chunk_start:chunk_start + 500]
             result = await db.execute(
-                select(Url.id, Url.url).where(Url.url.in_(chunk))
+                select(Url.id, Url.url).where(Url.url_hash.in_(chunk))
             )
             for uid, uurl in result:
                 url_id_map[uurl] = uid

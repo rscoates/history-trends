@@ -28,8 +28,9 @@ import {
   Delete as DeleteIcon,
   Add as AddIcon,
   Computer as ComputerIcon,
+  Edit as EditIcon,
 } from '@mui/icons-material';
-import { uploadTsv, getImports, deleteImport, getMachines, createMachine } from '../services/api';
+import { uploadTsv, getImports, deleteImport, getMachines, createMachine, renameMachine } from '../services/api';
 
 export default function ImportPage() {
   const [file, setFile] = useState(null);
@@ -42,6 +43,8 @@ export default function ImportPage() {
   const [machines, setMachines] = useState([]);
   const [showNewMachine, setShowNewMachine] = useState(false);
   const [newMachineName, setNewMachineName] = useState('');
+  const [editingMachine, setEditingMachine] = useState(null);
+  const [editMachineName, setEditMachineName] = useState('');
   const fileRef = useRef();
 
   const loadData = async () => {
@@ -94,6 +97,18 @@ export default function ImportPage() {
       loadData();
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to create machine');
+    }
+  };
+
+  const handleRenameMachine = async () => {
+    if (!editMachineName.trim() || !editingMachine) return;
+    try {
+      await renameMachine(editingMachine.id, editMachineName.trim());
+      setEditingMachine(null);
+      setEditMachineName('');
+      loadData();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to rename machine');
     }
   };
 
@@ -194,6 +209,8 @@ export default function ImportPage() {
               label={m.name}
               variant="outlined"
               color="primary"
+              onDelete={() => { setEditingMachine(m); setEditMachineName(m.name); }}
+              deleteIcon={<Tooltip title="Rename"><EditIcon fontSize="small" /></Tooltip>}
               sx={{ mb: 1 }}
             />
           ))}
@@ -273,6 +290,28 @@ export default function ImportPage() {
           <Button onClick={() => setShowNewMachine(false)}>Cancel</Button>
           <Button variant="contained" onClick={handleCreateMachine} disabled={!newMachineName.trim()}>
             Create
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Rename Machine Dialog */}
+      <Dialog open={!!editingMachine} onClose={() => setEditingMachine(null)}>
+        <DialogTitle>Rename Machine</DialogTitle>
+        <DialogContent>
+          <TextField
+            fullWidth
+            label="New Name"
+            value={editMachineName}
+            onChange={(e) => setEditMachineName(e.target.value)}
+            autoFocus
+            sx={{ mt: 1 }}
+            onKeyDown={(e) => e.key === 'Enter' && handleRenameMachine()}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setEditingMachine(null)}>Cancel</Button>
+          <Button variant="contained" onClick={handleRenameMachine} disabled={!editMachineName.trim()}>
+            Rename
           </Button>
         </DialogActions>
       </Dialog>

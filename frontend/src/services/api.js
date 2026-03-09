@@ -33,6 +33,7 @@ export const login = (password) => api.post('/auth/login', { password });
 // --- Machines ---
 export const getMachines = () => api.get('/machines/');
 export const createMachine = (name) => api.post('/machines/', { name });
+export const renameMachine = (id, name) => api.patch(`/machines/${id}`, { name });
 export const deleteMachine = (id) => api.delete(`/machines/${id}`);
 
 // --- Imports ---

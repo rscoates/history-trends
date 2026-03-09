@@ -19,10 +19,27 @@ async def list_machines(db: AsyncSession = Depends(get_db)):
 @router.post("/", response_model=MachineOut, status_code=201)
 async def create_machine(body: MachineCreate, db: AsyncSession = Depends(get_db)):
     existing = await db.execute(select(Machine).where(Machine.name == body.name))
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Machine already exists")
+    machine = existing.scalar_one_or_none()
+    if machine:
+        return machine  # return existing instead of 409
     machine = Machine(name=body.name)
     db.add(machine)
+    await db.commit()
+    await db.refresh(machine)
+    return machine
+
+
+@router.patch("/{machine_id}", response_model=MachineOut)
+async def rename_machine(machine_id: int, body: MachineCreate, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Machine).where(Machine.id == machine_id))
+    machine = result.scalar_one_or_none()
+    if not machine:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    # Check name not taken by another machine
+    dup = await db.execute(select(Machine).where(Machine.name == body.name, Machine.id != machine_id))
+    if dup.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="A machine with that name already exists")
+    machine.name = body.name
     await db.commit()
     await db.refresh(machine)
     return machine
